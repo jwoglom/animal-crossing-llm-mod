@@ -103,6 +103,8 @@ EXPRESSION_MAP = {
     0xFE: "Reset Expressions (Sitting)", 0xFF: "Reset Expressions"
 }
 
+# Reverse mappings for encoding (defined after all original mappings)
+
 MUSIC_TRANSITIONS = {
     0x00: "None",
     0x01: "Undetermined", 
@@ -137,6 +139,22 @@ PLAYER_EMOTIONS = {
     0xFD: "Purple Mist",  # Sick Emotion?
     0xFE: "Scared",
     0xFF: "Reset Emotion"
+}
+
+# Reverse mappings for encoding
+REVERSE_EXPRESSION_MAP = {v: k for k, v in EXPRESSION_MAP.items()}
+REVERSE_PLAYER_EMOTIONS = {v: k for k, v in PLAYER_EMOTIONS.items()}
+REVERSE_MUSIC_LIST = {v: k for k, v in MUSIC_LIST.items()}
+REVERSE_MUSIC_TRANSITIONS = {v: k for k, v in MUSIC_TRANSITIONS.items()}
+REVERSE_SOUNDEFFECT_LIST = {v: k for k, v in SOUNDEFFECT_LIST.items()}
+
+# Mapping from control code to their argument types and reverse mappings
+CONTROL_CODE_ARG_MAPPINGS = {
+    0x08: (REVERSE_PLAYER_EMOTIONS,),  # Player Emotion: [hex, emotion_name]
+    0x09: (REVERSE_EXPRESSION_MAP,),   # NPC Expression: [hex, expression_name]
+    0x56: (REVERSE_MUSIC_LIST, REVERSE_MUSIC_TRANSITIONS),  # Play Music: [music_name, transition_name]
+    0x57: (REVERSE_MUSIC_LIST, REVERSE_MUSIC_TRANSITIONS),  # Stop Music: [music_name, transition_name]
+    0x59: (REVERSE_SOUNDEFFECT_LIST,), # Play Sound Effect: [sound_name]
 }
 
 def parse_ac_text(data: bytes) -> str:
@@ -356,6 +374,36 @@ def is_start_menu_time_announcement(text: str) -> bool:
             return True
     return False
 
+def _parse_control_args(token: str, command_byte: int) -> List[int]:
+    """Parse arguments from a control tag, handling both hex and text arguments."""
+    # Extract all bracketed arguments
+    arg_pattern = re.compile(r'\[([^\]]+)\]')
+    arg_matches = arg_pattern.findall(token)
+    args = []
+    
+    # Get the reverse mappings for this command if any
+    reverse_mappings = CONTROL_CODE_ARG_MAPPINGS.get(command_byte, ())
+    
+    for i, arg_match in enumerate(arg_matches):
+        # Try to parse as hex first
+        try:
+            hex_val = int(arg_match, 16)
+            args.append(hex_val)
+        except ValueError:
+            # Not hex, try to map from text using reverse mappings
+            if i < len(reverse_mappings):
+                reverse_map = reverse_mappings[i]
+                if arg_match.upper() in reverse_map:
+                    args.append(reverse_map[arg_match.upper()])
+                else:
+                    # Fallback to 0 if mapping not found
+                    args.append(0)
+            else:
+                # No mapping available, default to 0
+                args.append(0)
+    
+    return args
+
 def encode_ac_text(text: str) -> bytes:
     """Encodes a human-readable string into Animal Crossing's byte format."""
     encoded = bytearray()
@@ -368,14 +416,15 @@ def encode_ac_text(text: str) -> bytes:
         if not token: continue
         
         if token.startswith('<') and token.endswith('>'):
-            # Accept numbers inside brackets even if additional text is present (e.g., [Cat:01])
-            # Capture up to 6 hex digits to cover colors too
+            # Extract hex arguments for command detection
             arg_pattern = re.compile(r'\[[^\]]*?([0-9a-fA-F]{1,6})\]')
-            args = [int(arg, 16) for arg in arg_pattern.findall(token)]
+            hex_args = [int(arg, 16) for arg in arg_pattern.findall(token)]
             base_tag = re.sub(r'\[.*?\]', '[{}]', token)
             command_byte = REVERSE_CONTROL_CODES.get(base_tag)
             
             if command_byte is not None:
+                # Parse all arguments (both hex and text) for this specific command
+                args = _parse_control_args(token, command_byte)
                 encoded.append(PREFIX_BYTE)
                 encoded.append(command_byte)
                 
